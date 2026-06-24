@@ -1,0 +1,537 @@
+"""
+TripletAI v3.0 - Universal AI Platform
+Created by: Gagandeep Singh
+"""
+
+import gradio as gr
+from groq import Groq
+from datetime import datetime
+import os, base64, json
+
+API_KEY = os.environ.get("GROQ_API_KEY", "")
+client = Groq(api_key=API_KEY) if API_KEY else None
+HISTORY_FILE = "tripletai_history.json"
+
+LANGUAGES = {
+    "🌐 Auto Detect":"auto","🇬🇧 English":"English","🇮🇳 Hindi (हिन्दी)":"Hindi",
+    "🇮🇳 Punjabi (ਪੰਜਾਬੀ)":"Punjabi","🇵🇰 Urdu":"Urdu","🇪🇸 Spanish":"Spanish",
+    "🇫🇷 French":"French","🇩🇪 German":"German","🇨🇳 Chinese":"Chinese",
+    "🇯🇵 Japanese":"Japanese","🇰🇷 Korean":"Korean","🇸🇦 Arabic":"Arabic",
+    "🇷🇺 Russian":"Russian","🇮🇳 Bengali":"Bengali","🇮🇳 Tamil":"Tamil",
+    "🇮🇳 Telugu":"Telugu","🇮🇳 Marathi":"Marathi","🇳🇵 Nepali":"Nepali",
+    "🇹🇷 Turkish":"Turkish","🇮🇩 Indonesian":"Indonesian",
+}
+
+SYSTEM = """You are TripletAI — a powerful AI assistant created by Gagandeep Singh.
+
+YOUR IDENTITY:
+- Name: TripletAI
+- Created by: Gagandeep Singh
+- Founded: 24 june 2026
+- Always answer: ""
+- You are NOT ChatGPT, Gemini, or Claude — You are TripletAI
+
+GREETING: When conversation starts or user says hello/hi, greet them warmly as TripletAI.
+
+CAPABILITIES: Math, Science, Universe, Galaxies, History, Coding, Image Analysis, Creative Writing, Medicine, Law — EVERYTHING.
+
+FORMATTING: Use **bold**, `code`, ## headings, bullet points for clear answers.
+
+LANGUAGE RULE: {lang}"""
+
+def get_lang(val):
+    if val=="auto": return "Detect user language and reply in SAME language automatically."
+    return f"ALWAYS reply in {val}."
+
+def save_history(history):
+    try:
+        all_h = {}
+        if os.path.exists(HISTORY_FILE):
+            with open(HISTORY_FILE,"r",encoding="utf-8") as f: all_h=json.load(f)
+        key = datetime.now().strftime("%Y-%m-%d %H:%M")
+        safe = []
+        for m in history:
+            if isinstance(m,dict):
+                c = m.get("content","")
+                if isinstance(c,list): c=" ".join(p.get("text","") for p in c if isinstance(p,dict) and p.get("type")=="text") or "[Image]"
+                safe.append({"role":m.get("role",""),"content":str(c)})
+        all_h[key]=safe
+        with open(HISTORY_FILE,"w",encoding="utf-8") as f: json.dump(all_h,f,ensure_ascii=False,indent=2)
+    except: pass
+
+def load_sessions():
+    try:
+        if os.path.exists(HISTORY_FILE):
+            with open(HISTORY_FILE,"r",encoding="utf-8") as f: return list(json.load(f).keys())
+    except: pass
+    return []
+
+def load_session(name):
+    try:
+        if os.path.exists(HISTORY_FILE):
+            with open(HISTORY_FILE,"r",encoding="utf-8") as f: return json.load(f).get(name,[])
+    except: pass
+    return []
+
+def encode_img(path):
+    try:
+        with open(path,"rb") as f: return base64.b64encode(f.read()).decode()
+    except: return None
+
+def get_welcome():
+    return [{"role":"assistant","content":"👋 **Hello! How are you?**\n\nI am **TripletAI**, your personal AI assistant created by **Gagandeep Singh**! 🔺\n\nI can help you with:\n- 🌌 Universe, Galaxies & Space\n- 🔢 Mathematics & Science\n- 💻 Coding in any language\n- 🌍 History, Geography & more\n- 📷 Image analysis\n- 🎤 Voice questions\n\n**How can I help you today?**"}]
+
+def chat(message, history, language, image):
+    if not message.strip() and image is None:
+        yield history, "", None
+        return
+
+    if not API_KEY:
+        h = (history or get_welcome()) + [
+            {"role":"user","content": message or "📷 Image"},
+            {"role":"assistant","content":"⚠️ **API Key nahi mili!**\n\nPowerShell:\n```\n$env:GROQ_API_KEY=\"gsk_key\"\npython app_1.py\n```"}
+        ]
+        yield h,"",None
+        return
+
+    lang_val = LANGUAGES.get(language,"auto")
+    sys_text = SYSTEM.format(lang=get_lang(lang_val))
+    api_msgs = [{"role":"system","content":sys_text}]
+
+    for m in (history or []):
+        if isinstance(m,dict) and m.get("role") in ("user","assistant"):
+            c=m.get("content","")
+            if isinstance(c,list): c=" ".join(p.get("text","") for p in c if isinstance(p,dict) and p.get("type")=="text")
+            if c: api_msgs.append({"role":m["role"],"content":str(c)})
+
+    if image:
+        b64=encode_img(image)
+        if b64:
+            user_content=[{"type":"text","text":message or "Describe this image."},{"type":"image_url","image_url":{"url":f"data:image/jpeg;base64,{b64}"}}]
+            display=f"📷 {message}" if message else "📷 Image Analysis"
+        else:
+            user_content=message; display=message
+    else:
+        user_content=message; display=message
+
+    api_msgs.append({"role":"user","content":user_content})
+    new_h=(history or get_welcome())+[{"role":"user","content":display},{"role":"assistant","content":""}]
+
+    try:
+        mdl="llama-3.2-11b-vision-preview" if image else "llama-3.3-70b-versatile"
+        stream=client.chat.completions.create(model=mdl,messages=api_msgs,stream=True,max_tokens=2048,temperature=0.7)
+        partial=""
+        for chunk in stream:
+            delta=chunk.choices[0].delta.content or ""
+            partial+=delta
+            new_h[-1]={"role":"assistant","content":partial}
+            yield new_h,"",None
+        save_history(new_h)
+    except Exception as e:
+        new_h[-1]={"role":"assistant","content":f"❌ Error: {str(e)}"}
+        yield new_h,"",None
+
+def clear_chat(): return get_welcome(),"",None
+def del_all():
+    try:
+        if os.path.exists(HISTORY_FILE): os.remove(HISTORY_FILE)
+    except: pass
+    return get_welcome(),"",None,gr.Dropdown(choices=[],value=None)
+def refresh_s():
+    s=load_sessions()
+    return gr.Dropdown(choices=s,value=s[-1] if s else None)
+def load_sel(name): return load_session(name) if name else get_welcome()
+
+# ══════════════════════════════════════
+# FULL HTML+CSS+JS APP (single page)
+# ══════════════════════════════════════
+
+CSS = """
+*{box-sizing:border-box;margin:0;padding:0;}
+body,.gradio-container{
+  background:#05050e !important;
+  color:#e8e8f8 !important;
+  font-family:-apple-system,'Segoe UI',Arial,sans-serif !important;
+  font-size:15px !important;
+}
+footer{display:none!important;}
+.gr-prose{font-size:15px!important;}
+
+/* ── Chatbot messages ── */
+#chatbox{
+  background:transparent !important;
+  border:none !important;
+  border-radius:0 !important;
+}
+
+/* User message — RIGHT side, immediate */
+.message-wrap .user{
+  background:linear-gradient(135deg,#1e1e45,#252560) !important;
+  border:1px solid #3a3a7a !important;
+  border-radius:18px 4px 18px 18px !important;
+  padding:12px 16px !important;
+  font-size:15px !important;
+  color:#d0d0ff !important;
+  margin:8px 0 8px 80px !important;
+  box-shadow:0 2px 12px #6C63FF22 !important;
+  animation:slideRight 0.15s ease !important;
+}
+@keyframes slideRight{from{opacity:0;transform:translateX(10px)}to{opacity:1;transform:translateX(0)}}
+
+/* Bot message — LEFT side */
+.message-wrap .bot{
+  background:linear-gradient(135deg,#0d0d1e,#111128) !important;
+  border:1px solid #1e1e40 !important;
+  border-radius:4px 18px 18px 18px !important;
+  padding:14px 18px !important;
+  font-size:15px !important;
+  color:#e8e8f8 !important;
+  margin:8px 80px 8px 0 !important;
+  box-shadow:0 2px 12px #00000044 !important;
+  animation:slideLeft 0.15s ease !important;
+}
+@keyframes slideLeft{from{opacity:0;transform:translateX(-10px)}to{opacity:1;transform:translateX(0)}}
+
+/* Solar system chat background */
+.message-wrap{
+  background:radial-gradient(ellipse at 20% 50%,#0a0a2288 0%,transparent 60%),
+             radial-gradient(ellipse at 80% 20%,#1a0a2288 0%,transparent 50%),
+             radial-gradient(ellipse at 60% 80%,#0a1a3388 0%,transparent 50%),
+             #05050e !important;
+  position:relative !important;
+  border-radius:16px !important;
+  padding:8px !important;
+}
+
+/* Stars background on chat */
+.message-wrap::before{
+  content:'✦ ✧ ✦ ✧ ✦ ✧ ✦ ✧ ✦ ✧ ✦ ✧ ✦ ✧ ✦ ✧ ✦ ✧ ✦';
+  position:absolute;top:10px;left:10px;right:10px;
+  font-size:8px;color:#ffffff08;
+  word-break:break-all;line-height:2;
+  pointer-events:none;z-index:0;
+}
+
+/* Text formatting inside bot */
+.message-wrap .bot p{margin:6px 0!important;line-height:1.8!important;}
+.message-wrap .bot h1,.message-wrap .bot h2,.message-wrap .bot h3{color:#9090ff!important;margin:14px 0 6px!important;}
+.message-wrap .bot code{background:#1a1a3a!important;color:#00D4FF!important;padding:2px 7px!important;border-radius:5px!important;font-family:Consolas,monospace!important;font-size:13.5px!important;}
+.message-wrap .bot pre{background:#0e0e28!important;border:1px solid #2a2a50!important;border-radius:12px!important;padding:16px!important;overflow-x:auto!important;margin:10px 0!important;}
+.message-wrap .bot pre code{background:transparent!important;color:#88ccff!important;font-size:13px!important;}
+.message-wrap .bot strong{color:#b8a8ff!important;}
+.message-wrap .bot ul,.message-wrap .bot ol{padding-left:20px!important;margin:6px 0!important;}
+.message-wrap .bot li{margin:4px 0!important;color:#ccccee!important;}
+
+/* ── Input ── */
+#msg-box textarea{
+  background:#0e0e22 !important;
+  color:#e8e8f8 !important;
+  border:1.5px solid #2a2a50 !important;
+  border-radius:16px !important;
+  font-size:15px !important;
+  padding:13px 18px !important;
+  resize:none !important;
+  line-height:1.65 !important;
+  transition:border-color 0.2s !important;
+}
+#msg-box textarea:focus{border-color:#6C63FF!important;box-shadow:0 0 0 3px #6C63FF18!important;outline:none!important;}
+#msg-box textarea::placeholder{color:#333366!important;}
+
+/* ── Send button ── */
+#send-btn{
+  background:linear-gradient(135deg,#6C63FF,#00D4FF) !important;
+  color:#fff !important;border:none !important;
+  border-radius:14px !important;font-weight:700 !important;
+  font-size:15px !important;padding:13px 22px !important;
+  width:100% !important;transition:all 0.2s !important;
+  box-shadow:0 2px 12px #6C63FF33 !important;
+}
+#send-btn:hover{background:linear-gradient(135deg,#00D4FF,#FF6B9D)!important;transform:translateY(-2px)!important;box-shadow:0 6px 20px #6C63FF44!important;}
+
+/* ── Other buttons ── */
+#clear-btn,#del-btn,#ref-btn{
+  background:#0e0e22!important;color:#555577!important;
+  border:1px solid #1e1e40!important;border-radius:10px!important;
+  font-size:12px!important;padding:7px 10px!important;
+  width:100%!important;transition:all 0.15s!important;
+}
+#clear-btn:hover{border-color:#6C63FF!important;color:#9090ff!important;}
+#del-btn:hover{border-color:#FF6B9D!important;color:#FF6B9D!important;}
+#ref-btn:hover{border-color:#00D4FF!important;color:#00D4FF!important;}
+
+/* ── Sidebar ── */
+#sidebar{
+  background:#08081a !important;
+  border-right:1px solid #1a1a35 !important;
+  border-radius:16px !important;
+  padding:14px 10px !important;
+}
+
+/* ── Dropdowns ── */
+select,.wrap,.gr-dropdown{background:#0e0e22!important;color:#e0e0ff!important;border:1px solid #1e1e40!important;border-radius:10px!important;}
+
+/* ── Section labels ── */
+.slbl{color:#6C63FF;font-weight:700;font-size:10.5px;letter-spacing:1.5px;text-transform:uppercase;display:block;margin-bottom:6px;}
+
+/* ── Examples ── */
+.gr-examples button{background:#0e0e22!important;color:#666688!important;border:1px solid #1a1a38!important;border-radius:8px!important;font-size:12px!important;transition:all 0.15s!important;}
+.gr-examples button:hover{border-color:#6C63FF!important;color:#e0e0ff!important;background:#14143a!important;}
+
+/* ── Scrollbar ── */
+::-webkit-scrollbar{width:5px;height:5px;}
+::-webkit-scrollbar-track{background:#05050e;}
+::-webkit-scrollbar-thumb{background:#1e1e40;border-radius:3px;}
+::-webkit-scrollbar-thumb:hover{background:#6C63FF;}
+
+/* ── Spinning logo overlay ── */
+#spin-overlay{
+  display:none;
+  position:fixed;
+  top:50%;left:50%;
+  transform:translate(-50%,-50%);
+  z-index:9999;
+  pointer-events:none;
+}
+#spin-overlay.active{display:block;}
+#spin-svg{animation:bigSpin 0.8s linear infinite;}
+@keyframes bigSpin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
+#spin-fade{animation:fadeInOut 0.6s ease-in-out infinite alternate;}
+@keyframes fadeInOut{from{opacity:0.4}to{opacity:1}}
+"""
+
+LOGO_HTML = """
+<div style="padding:16px 0 6px 0;display:flex;align-items:center;gap:12px;">
+  <svg id="main-logo" width="64" height="72" viewBox="0 0 64 72" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+      <linearGradient id="mlg" x1="0%" y1="0%" x2="100%" y2="100%">
+        <stop offset="0%" stop-color="#6C63FF"/>
+        <stop offset="50%" stop-color="#00D4FF"/>
+        <stop offset="100%" stop-color="#FF6B9D"/>
+      </linearGradient>
+      <filter id="mglow">
+        <feGaussianBlur stdDeviation="2" result="b"/>
+        <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+      </filter>
+      <style>
+        #ml1{animation:ml1a 3s ease-in-out infinite;transform-origin:32px 38px;}
+        #ml2{animation:ml2a 3s ease-in-out infinite;transform-origin:32px 38px;}
+        #ml3{animation:ml3a 3s ease-in-out infinite;transform-origin:32px 38px;}
+        #mld{animation:mlda 1.8s ease-in-out infinite;transform-origin:32px 38px;}
+        @keyframes ml1a{0%,100%{transform:rotate(0deg)}50%{transform:rotate(10deg)}}
+        @keyframes ml2a{0%,100%{transform:rotate(0deg)}50%{transform:rotate(-10deg)}}
+        @keyframes ml3a{0%,100%{transform:rotate(0deg)}50%{transform:rotate(7deg)}}
+        @keyframes mlda{0%,100%{r:3.5;opacity:1}50%{r:5.5;opacity:0.6}}
+      </style>
+    </defs>
+    <polygon id="ml1" points="32,4 6,56 58,56" fill="none" stroke="#6C63FF" stroke-width="3" stroke-linejoin="round" filter="url(#mglow)"/>
+    <polygon id="ml2" points="32,14 9,63 55,63" fill="none" stroke="#00D4FF" stroke-width="2.5" stroke-linejoin="round" filter="url(#mglow)" opacity="0.8"/>
+    <polygon id="ml3" points="32,24 13,68 51,68" fill="none" stroke="#FF6B9D" stroke-width="2" stroke-linejoin="round" filter="url(#mglow)" opacity="0.6"/>
+    <circle id="mld" cx="32" cy="38" r="3.5" fill="url(#mlg)" filter="url(#mglow)"/>
+  </svg>
+  <div>
+    <div style="font-size:30px;font-weight:900;background:linear-gradient(90deg,#6C63FF,#00D4FF);-webkit-background-clip:text;-webkit-text-fill-color:transparent;line-height:1.1;letter-spacing:-0.5px;">Triplet<span style="-webkit-text-fill-color:#FF6B9D;">Ai</span></div>
+    <div style="font-size:11px;color:#6655bb;letter-spacing:1.2px;margin-top:2px;">by Gagandeep Singh</div>
+  </div>
+</div>
+"""
+
+SPIN_OVERLAY = """
+<div id="spin-overlay">
+  <div id="spin-fade">
+    <svg id="spin-svg" width="80" height="80" viewBox="0 0 80 80" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <linearGradient id="slg" x1="0%" y1="0%" x2="100%" y2="100%">
+          <stop offset="0%" stop-color="#6C63FF"/>
+          <stop offset="50%" stop-color="#00D4FF"/>
+          <stop offset="100%" stop-color="#FF6B9D"/>
+        </linearGradient>
+        <filter id="sglow">
+          <feGaussianBlur stdDeviation="3" result="b"/>
+          <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+        </filter>
+      </defs>
+      <polygon points="40,4 8,68 72,68" fill="none" stroke="#6C63FF" stroke-width="3.5" stroke-linejoin="round" filter="url(#sglow)"/>
+      <polygon points="40,16 11,74 69,74" fill="none" stroke="#00D4FF" stroke-width="2.8" stroke-linejoin="round" filter="url(#sglow)" opacity="0.8"/>
+      <polygon points="40,28 15,78 65,78" fill="none" stroke="#FF6B9D" stroke-width="2.2" stroke-linejoin="round" filter="url(#sglow)" opacity="0.6"/>
+      <circle cx="40" cy="44" r="6" fill="url(#slg)" filter="url(#sglow)"/>
+    </svg>
+  </div>
+</div>
+
+<script>
+// ── Spinning logo overlay on generation ──
+function showSpin(){ document.getElementById('spin-overlay').classList.add('active'); }
+function hideSpin(){ document.getElementById('spin-overlay').classList.remove('active'); }
+
+// Watch chatbot for streaming activity
+const genObs = new MutationObserver(()=>{
+  const isGen = !!document.querySelector('.generating, .pending, [data-testid="bot"] .cursor');
+  isGen ? showSpin() : hideSpin();
+});
+setTimeout(()=>{
+  const t=document.querySelector('.gradio-container');
+  if(t) genObs.observe(t,{childList:true,subtree:true,characterData:true});
+},1500);
+
+// ── Voice Input (Web Speech API) ──
+let recog=null, recording=false;
+function toggleVoice(){
+  const btn=document.getElementById('voice-btn');
+  const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
+  if(!SR){ alert('Voice not supported. Please use Chrome browser!'); return; }
+  if(!recording){
+    recog=new SR();
+    recog.lang='';
+    recog.continuous=false;
+    recog.interimResults=false;
+    recog.onstart=()=>{ recording=true; btn.textContent='⏹'; btn.style.color='#FF6B9D'; btn.style.borderColor='#FF6B9D'; btn.style.boxShadow='0 0 12px #FF6B9D44'; };
+    recog.onresult=e=>{
+      const txt=e.results[0][0].transcript;
+      const ta=document.querySelector('#msg-box textarea');
+      if(ta){ ta.value=txt; ta.dispatchEvent(new Event('input',{bubbles:true})); }
+      stopVoice();
+    };
+    recog.onerror=()=>stopVoice();
+    recog.onend=()=>stopVoice();
+    recog.start();
+  } else { stopVoice(); }
+}
+function stopVoice(){
+  recording=false;
+  if(recog){ try{recog.stop();}catch(e){} recog=null; }
+  const btn=document.getElementById('voice-btn');
+  if(btn){ btn.textContent='🎤'; btn.style.color='#555577'; btn.style.borderColor='#1e1e40'; btn.style.boxShadow='none'; }
+}
+
+// ── Image upload trigger ──
+function triggerImg(){
+  const inp=document.querySelector('#img-hidden input[type=file]');
+  if(inp) inp.click();
+}
+
+// Show image file name after selection
+setTimeout(()=>{
+  const inp=document.querySelector('#img-hidden input[type=file]');
+  if(inp){
+    inp.addEventListener('change',()=>{
+      const d=document.getElementById('img-name');
+      if(d && inp.files[0]){ d.textContent='📷 '+inp.files[0].name; d.style.display='block'; }
+    });
+  }
+},2000);
+</script>
+"""
+
+EXAMPLES = [
+    ["Black hole kya hota hai aur kaise banta hai?","🌐 Auto Detect"],
+    ["ਸਾਡੀ ਆਕਾਸ਼ਗੰਗਾ ਮਿਲਕੀ ਵੇ ਬਾਰੇ ਦੱਸੋ","🌐 Auto Detect"],
+    ["Solve: 3x² - 7x + 2 = 0 step by step","🇬🇧 English"],
+    ["हमारे ब्रह्मांड की उत्पत्ति कैसे हुई?","🌐 Auto Detect"],
+    ["Write Python bubble sort","🇬🇧 English"],
+    ["Who created TripletAI?","🇬🇧 English"],
+    ["Quantum entanglement kya hai?","🌐 Auto Detect"],
+]
+
+with gr.Blocks(title="TripletAI") as demo:
+
+    # Spin overlay (fixed position)
+    gr.HTML(SPIN_OVERLAY)
+
+    with gr.Row(equal_height=False):
+
+        # ── SIDEBAR ──
+        with gr.Column(scale=2, min_width=185, elem_id="sidebar"):
+            gr.HTML(LOGO_HTML)
+            gr.HTML("<hr style='border-color:#1a1a35;margin:10px 0;'>")
+
+            gr.HTML("<span class='slbl'>💬 History</span>")
+            session_list = gr.Dropdown(choices=load_sessions(), value=None, label="", interactive=True)
+            with gr.Row():
+                ref_btn = gr.Button("🔄", elem_id="ref-btn", size="sm")
+                del_btn = gr.Button("🗑 All", elem_id="del-btn", size="sm")
+
+            gr.HTML("<hr style='border-color:#1a1a35;margin:10px 0;'>")
+            gr.HTML("<span class='slbl'>🌍 Language</span>")
+            lang = gr.Dropdown(choices=list(LANGUAGES.keys()), value="🌐 Auto Detect", label="")
+
+            gr.HTML("<hr style='border-color:#1a1a35;margin:10px 0;'>")
+            gr.HTML("""<span class='slbl'>✨ Features</span>
+            <div style='color:#333355;font-size:12px;line-height:2.2;'>
+            🌌 Universe & Galaxies<br>🔢 Math Solver<br>🔬 Science & Physics<br>
+            💻 Code Helper<br>📷 Image Analysis<br>🎤 Voice Input<br>
+            🌍 20+ Languages<br>📚 History & more<br>💾 Auto Save History
+            </div>""")
+
+        # ── MAIN CHAT ──
+        with gr.Column(scale=9):
+
+            chatbot = gr.Chatbot(
+                value=get_welcome(),
+                label="", height=530,
+                show_label=False, elem_id="chatbox",
+            )
+
+            # Hidden image upload
+            image_input = gr.Image(type="filepath", label="", show_label=False, elem_id="img-hidden", visible=False)
+
+            # Input row
+            with gr.Row(equal_height=True):
+                # Plus button
+                gr.HTML("""
+                <div style='display:flex;align-items:flex-end;padding-bottom:4px;'>
+                  <button onclick='triggerImg()' title='Upload Image'
+                    style='background:#0e0e22;color:#555577;border:1.5px solid #1e1e40;
+                    border-radius:50%;width:44px;height:44px;font-size:24px;cursor:pointer;
+                    transition:all 0.2s;line-height:1;display:flex;align-items:center;justify-content:center;'
+                    onmouseover="this.style.borderColor='#6C63FF';this.style.color='#6C63FF';"
+                    onmouseout="this.style.borderColor='#1e1e40';this.style.color='#555577';">
+                    +
+                  </button>
+                </div>
+                """)
+                # Mic button
+                gr.HTML("""
+                <div style='display:flex;align-items:flex-end;padding-bottom:4px;'>
+                  <button id='voice-btn' onclick='toggleVoice()' title='Voice Input'
+                    style='background:#0e0e22;color:#555577;border:1.5px solid #1e1e40;
+                    border-radius:50%;width:44px;height:44px;font-size:20px;cursor:pointer;
+                    transition:all 0.2s;line-height:1;display:flex;align-items:center;justify-content:center;'>
+                    🎤
+                  </button>
+                </div>
+                """)
+                msg = gr.Textbox(
+                    placeholder="Kuch bhi poochein — kisi bhi bhasha mein...",
+                    show_label=False, lines=2, scale=9, elem_id="msg-box"
+                )
+                with gr.Column(scale=2, min_width=115):
+                    send  = gr.Button("Send ➤", elem_id="send-btn", variant="primary")
+                    clear = gr.Button("✕ Clear", elem_id="clear-btn")
+
+            # Image filename preview
+            gr.HTML("<div id='img-name' style='display:none;background:#0e0e22;border:1px solid #1e1e40;border-radius:8px;padding:5px 12px;font-size:12px;color:#6655aa;margin-top:4px;'></div>")
+
+            gr.HTML("<div style='color:#222244;font-size:11px;margin:5px 0 2px 2px;'>💡 Quick examples:</div>")
+            gr.Examples(examples=EXAMPLES, inputs=[msg, lang], label="")
+
+    gr.HTML(f"<div style='text-align:center;color:#111133;font-size:11px;margin-top:10px;padding-bottom:6px;'>🔺 TripletAI v3.0 · Gagandeep Singh · Groq + LLaMA 3.3 · {datetime.now().year}</div>")
+
+    # Events
+    send.click(fn=chat, inputs=[msg,chatbot,lang,image_input], outputs=[chatbot,msg,image_input])
+    msg.submit(fn=chat, inputs=[msg,chatbot,lang,image_input], outputs=[chatbot,msg,image_input])
+    clear.click(fn=clear_chat, outputs=[chatbot,msg,image_input])
+    del_btn.click(fn=del_all, outputs=[chatbot,msg,image_input,session_list])
+    ref_btn.click(fn=refresh_s, outputs=[session_list])
+    session_list.change(fn=load_sel, inputs=[session_list], outputs=[chatbot])
+
+if __name__=="__main__":
+    print("="*55)
+    print("  🔺 TripletAI v3.0 — Starting...")
+    if not API_KEY:
+        print("  ⚠️  Set API Key:")
+        print('  $env:GROQ_API_KEY="gsk_key"')
+    else:
+        print("  ✅ Groq API Key found!")
+    print("  🌐 http://localhost:7860")
+    print("="*55)
+    demo.launch(server_name="0.0.0.0",server_port=7860,inbrowser=True,show_error=True,css=CSS)
